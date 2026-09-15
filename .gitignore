@@ -1,0 +1,7 @@
+# hola-coder session database
+hola-coder.db
+hola-coder.db-shm
+hola-coder.db-wal
+
+# compiled binary
+pacman
