@@ -211,6 +211,11 @@
     }
 
     function render() {
+      // Clear the canvas each frame to prevent ghosting/trails
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
       // Read state from WASM heap
       const ptr = Module.ccall('game_get_state', 'number');
       const HEAP32 = Module.HEAP32;
