@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pacman in C — Play in Browser (WASM)</title>
+<style>
+  :root {
+    --yellow: #ffe93a;
+    --yellow-dark: #f7c600;
+    --bg: #0a0f1e;
+    --panel: #141b33;
+    --text: #e8ecff;
+    --muted: #8a93c0;
+    --red: #ff3b3b;
+    --cyan: #3be8ff;
+    --pink: #ff7bd5;
+    --orange: #ffb43b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: radial-gradient(circle at 20% 10%, #1b2a55 0%, var(--bg) 55%);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 30px 20px;
+  }
+  h1 {
+    color: var(--yellow); font-weight: 900; letter-spacing: 1px;
+    text-shadow: 0 3px 0 var(--yellow-dark), 0 0 25px rgba(255,233,58,.4);
+    margin-bottom: 4px;
+  }
+  .sub { color: var(--muted); margin-bottom: 24px; font-size: .95rem; }
+  .sub code { color: var(--cyan); background: rgba(59,232,255,.1); padding: 2px 6px; border-radius: 4px; }
+
+  #game-wrap {
+    position: relative;
+    background: #000;
+    border-radius: 16px;
+    padding: 14px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.06);
+  }
+  canvas {
+    display: block;
+    border-radius: 8px;
+    background: #000;
+    image-rendering: pixelated;
+  }
+
+  /* HUD */
+  #hud {
+    display: flex; justify-content: space-between; align-items: center;
+    width: 100%; margin-bottom: 12px; font-weight: 700;
+  }
+  #hud span { font-size: 1.05rem; }
+  #score { color: var(--yellow); }
+  #lives { color: var(--red); letter-spacing: 3px; }
+  #level { color: var(--cyan); }
+
+  /* Overlay (start / game over) */
+  #overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: rgba(0,0,0,.78); border-radius: 16px; z-index: 5;
+    text-align: center;
+  }
+  #overlay h2 { font-size: 2.2rem; color: var(--yellow); text-shadow: 0 3px 0 var(--yellow-dark); }
+  #overlay p { color: var(--muted); max-width: 340px; line-height: 1.6; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 14px 28px; border-radius: 50px; font-weight: 700; font-size: 1rem;
+    border: none; cursor: pointer; text-decoration: none;
+    background: linear-gradient(135deg, var(--yellow), var(--yellow-dark)); color: #1a1500;
+    box-shadow: 0 8px 24px rgba(255,233,58,.35); transition: transform .2s;
+  }
+  .btn:hover { transform: scale(1.05); }
+
+  /* Controls legend */
+  .controls {
+    margin-top: 20px; display: flex; gap: 14px; flex-wrap: wrap; justify-content: center;
+    color: var(--muted); font-size: .9rem;
+  }
+  .controls kbd {
+    background: var(--panel); border: 1px solid rgba(255,255,255,.15);
+    border-radius: 6px; padding: 2px 8px; color: var(--text); font-family: monospace;
+  }
+  #loading { color: var(--cyan); font-weight: 700; }
+  .footer { margin-top: 26px; color: var(--muted); font-size: .85rem; }
+  .footer a { color: var(--yellow); text-decoration: none; }
+</style>
+</head>
+<body>
+  <h1>PACMAN in C</h1>
+  <div class="sub">Runs on <code>WebAssembly</code> — compiled from pure C with Emscripten</div>
+
+  <div id="game-wrap">
+    <div id="hud">
+      <span>SCORE: <span id="score">0</span></span>
+      <span>LEVEL: <span id="level">1</span></span>
+      <span>LIVES: <span id="lives">♥♥♥</span></span>
+    </div>
+    <canvas id="game" width="560" height="420"></canvas>
+    <div id="overlay">
+      <h2>👻 PACMAN</h2>
+      <p>Guide Pacman through the maze, eat every pellet, and avoid the ghosts. Grab a power pellet to turn the tables!</p>
+      <button class="btn" id="startBtn">▶ Start Game</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> / <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</span>
+    <span><kbd>P</kbd> Pause</span>
+    <span><kbd>R</kbd> Restart</span>
+  </div>
+
+  <div class="footer">
+    Built with <span style="color:var(--yellow)">❤</span> in C · <a href="https://github.com/cloudgpu/hola-apps" target="_blank">View source on GitHub</a>
+  </div>
+
+  <script src="pacman.js"></script>
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const startBtn = document.getElementById('startBtn');
+    const scoreEl = document.getElementById('score');
+    const livesEl = document.getElementById('lives');
+    const levelEl = document.getElementById('level');
+
+    let Module = null;
+    let paused = false;
+    let running = false;
+    let animFrame = null;
+    let lastTime = 0;
+
+    const CELL = 20; // canvas is 560x420 = 28x21 cells
+
+    // Colors
+    const COLORS = {
+      wall: '#1a1aff',
+      pellet: '#ffffff',
+      power: '#ffe93a',
+      pacman: '#ffe93a',
+      ghosts: ['#ff3b3b', '#3be8ff', '#ff7bd5', '#ffb43b'],
+      frightened: '#3b3bff'
+    };
+
+    // Initialize WASM module
+    createPacmanModule().then(mod => {
+      Module = mod;
+      document.getElementById('loading') && document.getElementById('loading').remove();
+    });
+
+    function dirFromKey(e) {
+      const k = e.key.toLowerCase();
+      if (k === 'arrowup' || k === 'w') return 0;
+      if (k === 'arrowdown' || k === 's') return 1;
+      if (k === 'arrowleft' || k === 'a') return 2;
+      if (k === 'arrowright' || k === 'd') return 3;
+      return -1;
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (!Module) return;
+      const d = dirFromKey(e);
+      if (d >= 0) {
+        Module.ccall('game_set_dir', 'void', ['number'], [d]);
+        if (!running && !paused) startGame();
+        e.preventDefault();
+      } else if (e.key.toLowerCase() === 'p') {
+        paused = !paused;
+        if (!paused) lastTime = performance.now();
+      } else if (e.key.toLowerCase() === 'r') {
+        restart();
+      }
+    });
+
+    function startGame() {
+      Module.ccall('game_init', 'void');
+      running = true;
+      paused = false;
+      overlay.style.display = 'none';
+      lastTime = performance.now();
+      loop();
+    }
+
+    function restart() {
+      cancelAnimationFrame(animFrame);
+      Module.ccall('game_init', 'void');
+      running = true;
+      paused = false;
+      overlay.style.display = 'none';
+      lastTime = performance.now();
+      loop();
+    }
+
+    startBtn.addEventListener('click', startGame);
+
+    // Game loop — step logic at ~6.6 updates/sec, render each frame
+    function loop(ts) {
+      if (!running) return;
+      if (!paused) {
+        if (ts - lastTime >= 150) {
+          Module.ccall('game_step', 'void');
+          lastTime = ts;
+        }
+        render();
+      }
+      animFrame = requestAnimationFrame(loop);
+    }
+
+    function render() {
+      // Read state from WASM heap
+      const ptr = Module.ccall('game_get_state', 'number');
+      const HEAP32 = Module.HEAP32;
+      const ROWS = HEAP32[ptr >> 2];
+      const COLS = HEAP32[(ptr + 4) >> 2];
+      let idx = 2;
+
+      // Draw board from chars
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          const ch = String.fromCharCode(HEAP32[(ptr + idx * 4) >> 2]);
+          idx++;
+          const px = x * CELL, py = y * CELL;
+          if (ch === '#') {
+            ctx.fillStyle = COLORS.wall;
+            ctx.fillRect(px, py, CELL, CELL);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(px + 1, py + 1, CELL - 2, CELL - 2);
+          } else if (ch === '.') {
+            ctx.fillStyle = COLORS.pellet;
+            ctx.beginPath();
+            ctx.arc(px + CELL/2, py + CELL/2, 2.5, 0, Math.PI*2);
+            ctx.fill();
+          } else if (ch === 'o') {
+            ctx.fillStyle = COLORS.power;
+            ctx.beginPath();
+            ctx.arc(px + CELL/2, py + CELL/2, 5, 0, Math.PI*2);
+            ctx.fill();
+          }
+        }
+      }
+
+      // Read entities
+      const pacY = HEAP32[(ptr + idx*4) >> 2]; idx++;
+      const pacX = HEAP32[(ptr + idx*4) >> 2]; idx++;
+      const pacDir = HEAP32[(ptr + idx*4) >> 2]; idx++;
+
+      const gh = [];
+      for (let i = 0; i < 4; i++) {
+        const gy = HEAP32[(ptr + idx*4) >> 2]; idx++;
+        const gx = HEAP32[(ptr + idx*4) >> 2]; idx++;
+        const gdir = HEAP32[(ptr + idx*4) >> 2]; idx++;
+        gh.push({ y: gy, x: gx, dir: gdir });
+      }
+
+      const score = HEAP32[(ptr + idx*4) >> 2]; idx++;
+      const lives = HEAP32[(ptr + idx*4) >> 2]; idx++;
+      const level = HEAP32[(ptr + idx*4) >> 2]; idx++;
+      const ghostMode = HEAP32[(ptr + idx*4) >> 2]; idx++;
+      const gameover = HEAP32[(ptr + idx*4) >> 2]; idx++;
+
+      // Update HUD
+      scoreEl.textContent = score;
+      levelEl.textContent = level;
+      livesEl.textContent = '♥'.repeat(Math.max(0, lives)) + '♡'.repeat(Math.max(0, 3 - lives));
+
+      // Draw ghosts
+      gh.forEach((g, i) => {
+        const cx = g.x * CELL + CELL/2;
+        const cy = g.y * CELL + CELL/2;
+        ctx.fillStyle = ghostMode ? COLORS.frightened : COLORS.ghosts[i];
+        // Ghost body (rounded dome)
+        ctx.beginPath();
+        ctx.arc(cx, cy - 3, CELL/2 - 2, Math.PI, 0);
+        ctx.lineTo(cx + CELL/2 - 2, cy + CELL/2 - 2);
+        // wavy bottom
+        for (let w = 0; w < 4; w++) {
+          const wx = cx + CELL/2 - 2 - (w + 0.5) * (CELL-4)/4;
+          ctx.lineTo(wx, cy + CELL/2 - 2 - (w % 2 ? 4 : 0));
+        }
+        ctx.lineTo(cx - CELL/2 + 2, cy + CELL/2 - 2);
+        ctx.closePath();
+        ctx.fill();
+        // eyes
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(cx - 4, cy - 3, 3, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + 4, cy - 3, 3, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#000';
+        let ex = (g.dir === 2 ? -1 : g.dir === 3 ? 1 : 0);
+        let ey = (g.dir === 0 ? -1 : g.dir === 1 ? 1 : 0);
+        ctx.beginPath(); ctx.arc(cx - 4 + ex, cy - 3 + ey, 1.5, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + 4 + ex, cy - 3 + ey, 1.5, 0, Math.PI*2); ctx.fill();
+      });
+
+      // Draw Pacman (mouth opens/closes by direction)
+      const cx = pacX * CELL + CELL/2;
+      const cy = pacY * CELL + CELL/2;
+      const mouth = Math.abs(Math.sin(performance.now() / 120)) * 0.9 + 0.1;
+      let startAng, endAng;
+      let pacDir2 = pacDir;
+      if (pacDir2 === 3) { startAng = mouth; endAng = 2*Math.PI - mouth; }
+      else if (pacDir2 === 2) { startAng = Math.PI + mouth; endAng = 2*Math.PI - mouth + Math.PI; }
+      else if (pacDir2 === 0) { startAng = Math.PI*1.5 + mouth; endAng = Math.PI*1.5 - mouth + 2*Math.PI; }
+      else { startAng = Math.PI*0.5 + mouth; endAng = Math.PI*0.5 - mouth + 2*Math.PI; }
+      ctx.fillStyle = COLORS.pacman;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, CELL/2 - 2, startAng, endAng);
+      ctx.closePath();
+      ctx.fill();
+
+      if (gameover) {
+        overlay.style.display = 'flex';
+        overlay.querySelector('h2').textContent = '💀 GAME OVER';
+        overlay.querySelector('p').textContent = 'Score: ' + score + ' — press R to restart';
+        running = false;
+        cancelAnimationFrame(animFrame);
+      }
+    }
+  </script>
+</body>
+</html>

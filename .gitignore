@@ -5,3 +5,6 @@ hola-coder.db-wal
 
 # compiled binary
 pacman
+
+# WASM test script
+test_wasm.js
